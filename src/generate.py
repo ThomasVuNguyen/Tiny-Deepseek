@@ -54,8 +54,19 @@ class DeepSeekStoryGenerator:
         config = checkpoint['config']
         model = DeepSeek(config)
         
+        # Handle different checkpoint formats
+        if 'model_state_dict' in checkpoint:
+            # Model-only checkpoint format
+            state_dict = checkpoint['model_state_dict']
+            checkpoint_type = "Model-only"
+        elif 'model' in checkpoint:
+            # Full checkpoint format
+            state_dict = checkpoint['model']
+            checkpoint_type = "Full"
+        else:
+            raise ValueError("Unknown checkpoint format")
+        
         # Handle compiled model state dict by removing _orig_mod prefix
-        state_dict = checkpoint['model']
         if all(k.startswith('_orig_mod.') for k in state_dict.keys()):
             state_dict = {k[10:]: v for k, v in state_dict.items()}  # Remove '_orig_mod.' prefix
         
@@ -64,7 +75,7 @@ class DeepSeekStoryGenerator:
         model.to(self.device)
         model.eval()
         
-        print(f"Model loaded successfully!")
+        print(f"Model loaded successfully! ({checkpoint_type} checkpoint)")
         print(f"Model configuration: {config.n_layer}L/{config.n_head}H/{config.n_embd}D")
         print(f"Device: {self.device}")
         
@@ -201,8 +212,8 @@ def main():
     parser = argparse.ArgumentParser(description='Generate children\'s stories with DeepSeek')
     
     # Model configuration
-    parser.add_argument('--model-path', type=str, default='checkpoints/best_model.pt',
-                       help='Path to the trained model checkpoint')
+    parser.add_argument('--model-path', type=str, default='checkpoints/best_model_only.pt',
+                       help='Path to the trained model checkpoint (use model-only for faster loading)')
     parser.add_argument('--device', type=str, default='auto',
                        help='Device to use (auto, cuda, cpu)')
     
@@ -275,6 +286,10 @@ def main():
         else:
             print("Please provide a prompt or use --interactive mode.")
             print("Example: python generate.py --prompt 'A brave little mouse' --character 'Mickey'")
+            print("")
+            print("Available model files:")
+            print("  --model-path checkpoints/best_model_only.pt     (Fast loading, ~86MB)")
+            print("  --model-path checkpoints/best_model.pt         (Full checkpoint, ~1.5GB)")
 
 
 if __name__ == "__main__":

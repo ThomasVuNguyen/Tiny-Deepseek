@@ -53,7 +53,7 @@ class DeepSeekTrainer:
         
         # Initialize gradient scaler for mixed precision training
         if use_mixed_precision and device == 'cuda':
-            self.scaler = torch.cuda.amp.GradScaler()
+            self.scaler = torch.amp.GradScaler('cuda')
         else:
             self.scaler = None
         
@@ -131,7 +131,7 @@ class DeepSeekTrainer:
                     X, Y = self.get_batch(split)
                     with torch.no_grad():
                         if self.scaler is not None:
-                            with torch.cuda.amp.autocast():
+                            with torch.amp.autocast('cuda'):
                                 logits, loss = self.model(X, Y)
                         else:
                             logits, loss = self.model(X, Y)
@@ -161,6 +161,7 @@ class DeepSeekTrainer:
     def save_checkpoint(self, iter_num, loss, is_best=False):
         """Save model checkpoint"""
         try:
+            # Full checkpoint (for resuming training)
             checkpoint = {
                 'model': self.model.state_dict(),
                 'optimizer': self.optimizer.state_dict(),
@@ -176,12 +177,30 @@ class DeepSeekTrainer:
             checkpoint_path = os.path.join(self.checkpoint_dir, f'checkpoint_{iter_num}.pt')
             torch.save(checkpoint, checkpoint_path)
             
+            # Model-only checkpoint (for inference)
+            model_only = {
+                'model_state_dict': self.model.state_dict(),
+                'config': self.model.config,
+                'iter_num': iter_num,
+                'loss': loss
+            }
+            model_only_path = os.path.join(self.checkpoint_dir, f'model_only_{iter_num}.pt')
+            torch.save(model_only, model_only_path)
+            
             if is_best:
+                # Save both versions as best
                 best_path = os.path.join(self.checkpoint_dir, 'best_model.pt')
                 torch.save(checkpoint, best_path)
+                
+                best_model_only_path = os.path.join(self.checkpoint_dir, 'best_model_only.pt')
+                torch.save(model_only, best_model_only_path)
+                
                 print(f"Saved best model with loss {loss:.4f}")
+                print(f"  - Full checkpoint: {best_path} (~1.5GB)")
+                print(f"  - Model-only: {best_model_only_path} (~86MB)")
             
             print(f"Saved checkpoint to {checkpoint_path}")
+            print(f"Saved model-only to {model_only_path}")
             return True
         except Exception as e:
             print(f"Error saving checkpoint: {str(e)}")
@@ -229,7 +248,7 @@ class DeepSeekTrainer:
                 
                 # Forward pass with mixed precision
                 if self.scaler is not None:
-                    with torch.cuda.amp.autocast():
+                    with torch.amp.autocast('cuda'):
                         logits, loss = self.model(X, Y)
                 else:
                     logits, loss = self.model(X, Y)

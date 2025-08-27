@@ -196,14 +196,23 @@ def train_model(model: DeepSeek, config: TrainingConfig):
         trainer.train()
         print("[+] Training completed successfully!")
         
-        # Save final model
+        # Save final model (both versions)
         final_model_path = os.path.join(config.checkpoint_dir, "final_model.pt")
         torch.save({
             'model_state_dict': model.state_dict(),
             'config': config,
             'optimizer_state_dict': trainer.optimizer.state_dict(),
         }, final_model_path)
-        print(f"[+] Final model saved to {final_model_path}")
+        
+        # Save final model-only version
+        final_model_only_path = os.path.join(config.checkpoint_dir, "final_model_only.pt")
+        torch.save({
+            'model_state_dict': model.state_dict(),
+            'config': config,
+        }, final_model_only_path)
+        
+        print(f"[+] Final model saved to {final_model_path} (~1.5GB)")
+        print(f"[+] Final model-only saved to {final_model_only_path} (~86MB)")
         
     except Exception as e:
         print(f"[-] Training failed: {e}")

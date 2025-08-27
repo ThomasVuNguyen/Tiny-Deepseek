@@ -345,20 +345,17 @@ class MultiTokenPredictor(nn.Module):
         """Forward pass for multi-token prediction"""
         batch_size, seq_len, hidden_dim = hidden_states.shape
         
-        # Predict multiple future tokens
+        # Predict multiple future tokens for each position
         logits = []
         for i, predictor in enumerate(self.predictors):
-            # Use hidden states shifted by i+1 positions
-            if i + 1 < seq_len:
-                token_logits = predictor(hidden_states[:, i+1:i+2, :])  # [B, 1, vocab_size]
-                logits.append(token_logits)
-            else:
-                # Pad with zeros if not enough sequence length
-                token_logits = torch.zeros(batch_size, 1, self.config.vocab_size, 
-                                         device=hidden_states.device)
-                logits.append(token_logits)
+            # Apply predictor to all positions
+            token_logits = predictor(hidden_states)  # [B, seq_len, vocab_size]
+            logits.append(token_logits)
         
-        return torch.cat(logits, dim=1)  # [B, num_tokens, vocab_size]
+        # Stack predictions: [B, seq_len, num_tokens, vocab_size]
+        logits = torch.stack(logits, dim=2)
+        
+        return logits
 
 
 class DeepSeek(nn.Module):
@@ -466,16 +463,33 @@ class DeepSeek(nn.Module):
     
     def _compute_multi_token_loss(self, logits: torch.Tensor, targets: torch.Tensor):
         """Compute loss for multi-token prediction"""
-        batch_size, num_tokens, vocab_size = logits.shape
+        # logits: [B, seq_len, num_tokens, vocab_size]
+        # targets: [B, seq_len]
+        batch_size, seq_len, num_tokens, vocab_size = logits.shape
         
-        # Reshape for loss computation
-        logits_flat = logits.view(-1, vocab_size)
-        targets_flat = targets.view(-1)
+        total_loss = 0
+        valid_predictions = 0
         
-        # Compute cross-entropy loss
-        loss = F.cross_entropy(logits_flat, targets_flat, ignore_index=-1)
+        for token_idx in range(num_tokens):
+            # Get predictions for token_idx positions ahead
+            token_logits = logits[:, :seq_len - token_idx - 1, token_idx, :]  # [B, valid_seq_len, vocab_size]
+            token_targets = targets[:, token_idx + 1:seq_len]  # [B, valid_seq_len]
+            
+            if token_logits.numel() > 0 and token_targets.numel() > 0:
+                # Flatten for cross entropy
+                token_logits_flat = token_logits.reshape(-1, vocab_size)
+                token_targets_flat = token_targets.reshape(-1)
+                
+                # Compute loss for this token prediction
+                token_loss = F.cross_entropy(token_logits_flat, token_targets_flat, ignore_index=-1)
+                total_loss += token_loss
+                valid_predictions += 1
         
-        return loss
+        # Average loss across all valid predictions
+        if valid_predictions > 0:
+            return total_loss / valid_predictions
+        else:
+            return torch.tensor(0.0, device=logits.device, requires_grad=True)
     
     @torch.no_grad()
     def generate(self, input_ids: torch.Tensor, max_new_tokens: int = 100, 
