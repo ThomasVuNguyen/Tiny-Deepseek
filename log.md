@@ -39,3 +39,24 @@
   - `src/data/fineweb_processor.py` - FineWeb-specific data processor
   - `src/run_fineweb_training.py` - FineWeb training script
   - `src/process_fineweb_sample.py` - Sample processor for testing
+
+## 2025-08-31
+- **FineWeb 150K Iteration Training Run Completed**: `python src/run_fineweb_training.py --batch-size 20 --learning-rate 8e-4 --eval-interval 10000 --eval-iters 100 --max-iters 150000`
+- **Training Performance Analysis**:
+  - **Major Learning Phase**: 0 → 20,000 iterations (loss dropped from ~11 to ~4.9)
+  - **Refinement Phase**: 20,000 → 100,000 iterations (slow improvement from ~4.9 to ~4.8)
+  - **Final Optimization**: 100,000 → 140,000 iterations (loss improved from ~4.8 to ~4.76)
+  - **Best Performance**: Validation loss 4.762640 at iteration 140,000
+  - **Diminishing Returns**: 120,000 iterations for minimal improvement (4.9 → 4.76)
+- **Key Insights**:
+  - **Dataset Too Small**: 5 parquet files (~10GB) caused overfitting after 20k iterations
+  - **Wasted Compute**: 120k iterations for only 0.14 loss improvement
+  - **Training Efficiency**: Model plateaued early due to insufficient data variety
+- **Optimization Strategy Identified**: Larger dataset (20-30 parquet files) with fewer iterations (40k) should achieve same performance in ~2-3 hours instead of 8+ hours
+- **Files Ready for Hugging Face Upload**:
+  - `fineweb_final_model_only.pt` (496MB) - Final trained model weights
+  - `fineweb_final_model.pt` (1.5GB) - Complete checkpoint with optimizer state
+  - `best_model_only.pt` (496MB) - Best performing model (iteration 140,000)
+  - `best_model.pt` (1.5GB) - Best complete checkpoint
+  - `training_log.csv` (1.4KB) - Complete training history and metrics
+  - `deepseek_training_metrics.png` (367KB) - Training visualization
