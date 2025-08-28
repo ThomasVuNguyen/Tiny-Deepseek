@@ -2,3 +2,4 @@ myenv/
 */*/__pycache__/
 */*/*.bin
 checkpoints/*.pt
+fineweb_checkpoints/*.pt
