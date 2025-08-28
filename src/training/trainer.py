@@ -75,6 +75,9 @@ class DeepSeekTrainer:
             'grad_norm': [],
             'memory_usage': [],
             'moe_aux_loss': [],
+            'moe_load_balancing': [],
+            'moe_z_loss': [],
+            'moe_entropy_loss': [],
             'multi_token_loss': []
         }
         
@@ -86,14 +89,21 @@ class DeepSeekTrainer:
         """Initialize CSV logging for training metrics"""
         with open(self.log_file, 'w', newline='') as f:
             writer = csv.writer(f)
-            writer.writerow(['iteration', 'train_loss', 'val_loss', 'learning_rate', 'elapsed_time', 'gpu_memory_gb'])
+            writer.writerow(['iteration', 'train_loss', 'val_loss', 'aux_loss', 'load_balancing', 'z_loss', 'entropy_loss', 'learning_rate', 'elapsed_time', 'gpu_memory_gb'])
         print(f"Training log will be saved to: {self.log_file}")
     
-    def log_metrics(self, iteration, train_loss, val_loss, lr, elapsed_time, gpu_memory=None):
+    def log_metrics(self, iteration, train_loss, val_loss, aux_loss, lr, elapsed_time, gpu_memory=None):
         """Log metrics to CSV file"""
+        # Get the latest auxiliary loss components
+        load_balancing = self.metrics['moe_load_balancing'][-1] if self.metrics['moe_load_balancing'] else 0.0
+        z_loss = self.metrics['moe_z_loss'][-1] if self.metrics['moe_z_loss'] else 0.0
+        entropy_loss = self.metrics['moe_entropy_loss'][-1] if self.metrics['moe_entropy_loss'] else 0.0
+        
         with open(self.log_file, 'a', newline='') as f:
             writer = csv.writer(f)
-            writer.writerow([iteration, f"{train_loss:.6f}", f"{val_loss:.6f}", f"{lr:.6e}", f"{elapsed_time:.2f}", gpu_memory or ""])
+            writer.writerow([iteration, f"{train_loss:.6f}", f"{val_loss:.6f}", f"{aux_loss:.6f}", 
+                           f"{load_balancing:.6f}", f"{z_loss:.6f}", f"{entropy_loss:.6f}", 
+                           f"{lr:.6e}", f"{elapsed_time:.2f}", gpu_memory or ""])
 
     def load_data(self):
         """Load the training and validation data"""
@@ -164,9 +174,9 @@ class DeepSeekTrainer:
                     with torch.no_grad():
                         if self.scaler is not None:
                             with torch.amp.autocast('cuda'):
-                                logits, loss = self.model(X, Y)
+                                logits, loss, aux_loss, aux_components = self.model(X, Y)
                         else:
-                            logits, loss = self.model(X, Y)
+                            logits, loss, aux_loss, aux_components = self.model(X, Y)
                     losses[k] = loss.item()
                 except Exception as e:
                     print(f"Error during evaluation: {str(e)}")
@@ -203,6 +213,10 @@ class DeepSeekTrainer:
                 'train_losses': self.train_losses,
                 'val_losses': self.val_losses,
                 'learning_rates': self.learning_rates,
+                'aux_losses': self.metrics['moe_aux_loss'],
+                'load_balancing_losses': self.metrics['moe_load_balancing'],
+                'z_losses': self.metrics['moe_z_loss'],
+                'entropy_losses': self.metrics['moe_entropy_loss'],
                 'metrics': self.metrics,
                 'best_loss': self.best_loss
             }
@@ -249,6 +263,15 @@ class DeepSeekTrainer:
             self.train_losses = checkpoint.get('train_losses', [])
             self.val_losses = checkpoint.get('val_losses', [])
             self.learning_rates = checkpoint.get('learning_rates', [])
+            aux_losses = checkpoint.get('aux_losses', [])
+            load_balancing_losses = checkpoint.get('load_balancing_losses', [])
+            z_losses = checkpoint.get('z_losses', [])
+            entropy_losses = checkpoint.get('entropy_losses', [])
+            
+            self.metrics['moe_aux_loss'] = aux_losses
+            self.metrics['moe_load_balancing'] = load_balancing_losses
+            self.metrics['moe_z_loss'] = z_losses
+            self.metrics['moe_entropy_loss'] = entropy_losses
             self.metrics = checkpoint.get('metrics', self.metrics)
             print(f"Successfully loaded checkpoint from iteration {self.current_iter}")
             return True
@@ -281,9 +304,9 @@ class DeepSeekTrainer:
                 # Forward pass with mixed precision
                 if self.scaler is not None:
                     with torch.amp.autocast('cuda'):
-                        logits, loss = self.model(X, Y)
+                        logits, loss, aux_loss, aux_components = self.model(X, Y)
                 else:
-                    logits, loss = self.model(X, Y)
+                    logits, loss, aux_loss, aux_components = self.model(X, Y)
                 
                 # Backward pass
                 if self.scaler is not None:
@@ -301,8 +324,16 @@ class DeepSeekTrainer:
                 
                 # Track metrics
                 current_loss = loss.item()
+                current_aux_loss = aux_loss.item() if aux_loss is not None else 0.0
                 self.train_losses.append(current_loss)
                 self.learning_rates.append(lr)
+                self.metrics['moe_aux_loss'].append(current_aux_loss)
+                
+                # Track individual auxiliary loss components
+                if aux_components:
+                    self.metrics['moe_load_balancing'].append(aux_components.get('load_balancing', 0.0))
+                    self.metrics['moe_z_loss'].append(aux_components.get('z_loss', 0.0))
+                    self.metrics['moe_entropy_loss'].append(aux_components.get('entropy_loss', 0.0))
                 
                 # Update best loss
                 if current_loss < best_loss:
@@ -324,7 +355,12 @@ class DeepSeekTrainer:
                     
                     # Print progress
                     elapsed = time.time() - start_time
+                    load_balancing = self.metrics['moe_load_balancing'][-1] if self.metrics['moe_load_balancing'] else 0.0
+                    z_loss = self.metrics['moe_z_loss'][-1] if self.metrics['moe_z_loss'] else 0.0
+                    entropy_loss = self.metrics['moe_entropy_loss'][-1] if self.metrics['moe_entropy_loss'] else 0.0
+                    
                     print(f"iter {iter_num}: train_loss {current_loss:.4f}, val_loss {losses['val']:.4f}, "
+                          f"aux_loss {current_aux_loss:.4f} (LB:{load_balancing:.4f}, Z:{z_loss:.4f}, E:{entropy_loss:.4f}), "
                           f"lr {lr:.2e}, time {elapsed:.2f}s")
                     
                     # Memory usage
@@ -335,7 +371,7 @@ class DeepSeekTrainer:
                         print(f"GPU memory: {memory_used:.2f} GB")
                     
                     # Log metrics to CSV
-                    self.log_metrics(iter_num, current_loss, losses['val'], lr, elapsed, gpu_memory)
+                    self.log_metrics(iter_num, current_loss, losses['val'], current_aux_loss, lr, elapsed, gpu_memory)
                 
                 # Memory cleanup
                 if iter_num % 100 == 0:
@@ -371,12 +407,21 @@ class DeepSeekTrainer:
         plt.legend()
         plt.grid(True)
         
-        plt.subplot(1, 2, 2)
+        plt.subplot(1, 3, 2)
         plt.plot(self.learning_rates)
         plt.title('Learning Rate Schedule')
         plt.xlabel('Iteration')
         plt.ylabel('Learning Rate')
         plt.grid(True)
+        
+        # Auxiliary loss
+        if self.metrics['moe_aux_loss']:
+            plt.subplot(1, 3, 3)
+            plt.plot(self.metrics['moe_aux_loss'], color='red')
+            plt.title('MoE Auxiliary Loss')
+            plt.xlabel('Iteration')
+            plt.ylabel('Auxiliary Loss')
+            plt.grid(True)
         
         plt.tight_layout()
         plt.savefig('training_metrics.png', dpi=300, bbox_inches='tight')
@@ -405,6 +450,15 @@ class DeepSeekTrainer:
         axes[0, 1].set_xlabel('Iteration')
         axes[0, 1].set_ylabel('Learning Rate')
         axes[0, 1].grid(True)
+        
+        # Auxiliary loss
+        if self.metrics['moe_aux_loss']:
+            axes[1, 0].plot(self.metrics['moe_aux_loss'], label='MoE Auxiliary Loss', color='red', alpha=0.7)
+            axes[1, 0].set_title('MoE Auxiliary Loss')
+            axes[1, 0].set_xlabel('Iteration')
+            axes[1, 0].set_ylabel('Auxiliary Loss')
+            axes[1, 0].legend()
+            axes[1, 0].grid(True, alpha=0.3)
         
         # Memory usage
         if self.metrics['memory_usage']:

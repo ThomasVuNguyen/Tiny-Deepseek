@@ -1,2 +1,4 @@
-iteration,train_loss,val_loss,learning_rate,elapsed_time,gpu_memory_gb
-0,10.926202,10.931027,0.000000e+00,23.99,3.77
+iteration,train_loss,val_loss,aux_loss,load_balancing,z_loss,entropy_loss,learning_rate,elapsed_time,gpu_memory_gb
+0,10.922432,10.920001,-0.293895,0.012674,0.875911,-7.883199,0.000000e+00,21.24,5.31
+1000,6.003136,6.059188,-0.182549,0.006643,1.592109,-6.968052,4.000000e-04,192.94,5.31
+2000,5.726650,5.688515,-0.151880,0.014792,1.720927,-6.775293,8.000000e-04,363.96,5.31

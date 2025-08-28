@@ -276,13 +276,33 @@ class MixtureOfExperts(nn.Module):
         return output, router_logits
     
     def _compute_aux_loss(self, router_logits: torch.Tensor):
-        """Compute auxiliary loss for load balancing"""
+        """Compute auxiliary loss for load balancing and router regularization"""
         router_probs = F.softmax(router_logits, dim=-1)
+        
+        # Load balancing loss
         mean_expert_usage = router_probs.mean(dim=[0, 1])  # [num_experts]
         target_usage = 1.0 / self.num_experts
+        load_balancing_loss = torch.sum((mean_expert_usage - target_usage) ** 2)
         
-        aux_loss = torch.sum((mean_expert_usage - target_usage) ** 2)
-        return aux_loss
+        # Router Z-loss (prevents overconfident routing)
+        # Penalize high confidence in router decisions
+        router_confidence = torch.max(router_probs, dim=-1)[0]  # [B, T]
+        z_loss = torch.mean(router_confidence ** 2)
+        
+        # Router entropy loss (encourages exploration)
+        # Higher entropy = more uncertain = better exploration
+        router_entropy = -torch.sum(router_probs * torch.log(router_probs + 1e-8), dim=-1)  # [B, T]
+        entropy_loss = -torch.mean(router_entropy)  # Negative because we want higher entropy
+        
+        # Combine losses
+        total_aux_loss = load_balancing_loss + 0.1 * z_loss + 0.05 * entropy_loss
+        
+        return total_aux_loss, {
+            'load_balancing': load_balancing_loss.item(),
+            'z_loss': z_loss.item(),
+            'entropy_loss': entropy_loss.item(),
+            'total': total_aux_loss.item()
+        }
 
 
 class DeepSeekBlock(nn.Module):
@@ -450,12 +470,28 @@ class DeepSeek(nn.Module):
                                      targets.view(-1), ignore_index=-1)
             
             # Add MoE auxiliary loss
+            aux_loss = torch.tensor(0.0, device=device)
+            aux_loss_components = {
+                'load_balancing': 0.0,
+                'z_loss': 0.0,
+                'entropy_loss': 0.0,
+                'total': 0.0
+            }
+            
             if router_logits_list:
-                aux_loss = sum(self.transformer.h[i].moe._compute_aux_loss(router_logits_list[i])
-                              for i in range(len(router_logits_list)))
+                total_aux_loss = 0.0
+                for i in range(len(router_logits_list)):
+                    layer_aux_loss, layer_components = self.transformer.h[i].moe._compute_aux_loss(router_logits_list[i])
+                    total_aux_loss += layer_aux_loss
+                    
+                    # Accumulate component losses
+                    for key in aux_loss_components:
+                        aux_loss_components[key] += layer_components[key]
+                
+                aux_loss = total_aux_loss
                 loss += self.config.moe_aux_loss_coeff * aux_loss
             
-            return logits if self.multi_token_predictor is None else multi_logits, loss
+            return logits if self.multi_token_predictor is None else multi_logits, loss, aux_loss, aux_loss_components
         else:
             # Inference mode
             logits = self.lm_head(x[:, [-1], :])
