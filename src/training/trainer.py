@@ -13,6 +13,7 @@ import datetime
 import time
 import shutil
 import psutil
+import csv
 import math
 import gc
 import torch.nn as nn
@@ -25,7 +26,8 @@ from typing import Dict, List, Optional, Tuple
 class DeepSeekTrainer:
     def __init__(self, model, optimizer, device, batch_size, max_iters, eval_interval, 
                  eval_iters, learning_rate, weight_decay, warmup_iters, lr_decay_iters, 
-                 min_lr, checkpoint_dir='checkpoints', use_mixed_precision=True):
+                 min_lr, checkpoint_dir='checkpoints', use_mixed_precision=True,
+                 train_data_path=None, val_data_path=None):
         self.model = model
         self.optimizer = optimizer
         self.device = device
@@ -42,6 +44,10 @@ class DeepSeekTrainer:
         self.use_mixed_precision = use_mixed_precision
         self.best_loss = float('inf')
         
+        # Data paths
+        self.train_data_path = train_data_path or os.path.join('src', 'data', 'train.bin')
+        self.val_data_path = val_data_path or os.path.join('src', 'data', 'val.bin')
+        
         # Training state
         self.current_iter = 0
         self.train_losses = []
@@ -50,6 +56,10 @@ class DeepSeekTrainer:
         
         # Create checkpoint directory if it doesn't exist
         os.makedirs(checkpoint_dir, exist_ok=True)
+        
+        # Initialize CSV logging
+        self.log_file = os.path.join(checkpoint_dir, 'training_log.csv')
+        self.init_csv_logging()
         
         # Initialize gradient scaler for mixed precision training
         if use_mixed_precision and device == 'cuda':
@@ -70,20 +80,39 @@ class DeepSeekTrainer:
         
         # Load data
         self.data = self.load_data()
-        self.n = len(self.data)
+        self.n = len(self.data['train'])  # Use training data length for progress tracking
+
+    def init_csv_logging(self):
+        """Initialize CSV logging for training metrics"""
+        with open(self.log_file, 'w', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow(['iteration', 'train_loss', 'val_loss', 'learning_rate', 'elapsed_time', 'gpu_memory_gb'])
+        print(f"Training log will be saved to: {self.log_file}")
+    
+    def log_metrics(self, iteration, train_loss, val_loss, lr, elapsed_time, gpu_memory=None):
+        """Log metrics to CSV file"""
+        with open(self.log_file, 'a', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow([iteration, f"{train_loss:.6f}", f"{val_loss:.6f}", f"{lr:.6e}", f"{elapsed_time:.2f}", gpu_memory or ""])
 
     def load_data(self):
-        """Load the training data"""
+        """Load the training and validation data"""
         try:
-            data_file = os.path.join('src', 'data', 'train.bin')
-            if not os.path.exists(data_file):
-                raise FileNotFoundError(f"Training data file not found at {data_file}")
+            # Load training data
+            if not os.path.exists(self.train_data_path):
+                raise FileNotFoundError(f"Training data file not found at {self.train_data_path}")
             
-            # Load data as numpy array first
-            data = np.memmap(data_file, dtype=np.uint16, mode='r')
-            # Convert to tensor
-            data = torch.from_numpy(data.copy())  # Make a copy to ensure it's writable
-            return data
+            train_data = np.memmap(self.train_data_path, dtype=np.uint16, mode='r')
+            train_data = torch.from_numpy(train_data.copy())
+            
+            # Load validation data
+            if not os.path.exists(self.val_data_path):
+                raise FileNotFoundError(f"Validation data file not found at {self.val_data_path}")
+            
+            val_data = np.memmap(self.val_data_path, dtype=np.uint16, mode='r')
+            val_data = torch.from_numpy(val_data.copy())
+            
+            return {'train': train_data, 'val': val_data}
         except Exception as e:
             print(f"Error loading data: {str(e)}")
             raise
@@ -91,13 +120,16 @@ class DeepSeekTrainer:
     def get_batch(self, split):
         """Get a batch of data"""
         try:
+            # Get the appropriate dataset
+            data = self.data[split]
+            
             # Generate random indices
-            ix = torch.randint(len(self.data) - self.model.config.block_size, (self.batch_size,))
+            ix = torch.randint(len(data) - self.model.config.block_size, (self.batch_size,))
             
             # Get input sequences
-            x = torch.stack([self.data[i:i+self.model.config.block_size].long() for i in ix])
+            x = torch.stack([data[i:i+self.model.config.block_size].long() for i in ix])
             # Get target sequences (shifted by 1)
-            y = torch.stack([self.data[i+1:i+1+self.model.config.block_size].long() for i in ix])
+            y = torch.stack([data[i+1:i+1+self.model.config.block_size].long() for i in ix])
             
             # Move to device
             x, y = x.to(self.device), y.to(self.device)
@@ -296,9 +328,14 @@ class DeepSeekTrainer:
                           f"lr {lr:.2e}, time {elapsed:.2f}s")
                     
                     # Memory usage
+                    gpu_memory = None
                     if self.device == 'cuda':
                         memory_used = torch.cuda.memory_allocated() / 1024**3
+                        gpu_memory = f"{memory_used:.2f}"
                         print(f"GPU memory: {memory_used:.2f} GB")
+                    
+                    # Log metrics to CSV
+                    self.log_metrics(iter_num, current_loss, losses['val'], lr, elapsed, gpu_memory)
                 
                 # Memory cleanup
                 if iter_num % 100 == 0:

@@ -43,6 +43,173 @@ chmod +x setup.sh
 ./setup.sh
 ```
 
+### Dataset Preparation
+
+The model is designed to work with datasets that have a specific structure. The current implementation expects a dataset with the following columns:
+
+- **`prompt`**: The story prompt or instruction (e.g., "Write a story about a brave mouse")
+- **`text`**: The actual story content to be generated
+
+#### Using the Default Dataset
+
+The model comes pre-configured to use the Hugging Face dataset:
+```bash
+# Dataset: ajibawa-2023/Children-Stories-Collection
+# Contains: 2,000+ children's stories with prompts and text
+```
+
+#### Using Your Own Dataset
+
+To use a different dataset, you can modify the configuration in `src/run_training.py`:
+
+1. **Change the dataset name** in the `TrainingConfig` class:
+```python
+dataset_name: str = "your-dataset-name-here"
+```
+
+2. **Ensure your dataset has the required columns**:
+   - `prompt`: Story prompts/instructions
+   - `text`: Story content
+   - Optional: `moral`, `lesson`, `character` (for enhanced structure)
+
+3. **Process your dataset**:
+```bash
+# The setup script will automatically process your dataset
+./setup.sh
+
+# Or manually process the data
+python src/data/data_processor.py
+```
+
+#### FineWeb Educational Dataset
+
+The model also supports the **HuggingFaceFW/fineweb-edu** dataset for educational content training. This dataset contains high-quality educational web content perfect for training language models on factual, educational material.
+
+**Dataset Structure:**
+- `text`: Main educational content (articles, tutorials, educational pages)
+- `url`: Source URL of the content
+- `date`: Publication date
+- `language`: Content language (filtered for English)
+- `score`: Quality score (we filter for score > 0.6)
+
+**Key Features:**
+- **Size**: ~4TB total (we use optimized sampling)
+- **Quality**: High-quality educational content from the web
+- **Processing**: Smart filtering by length (100-3000 chars) and quality score
+- **Split**: 80% training, 20% validation (optimized for language modeling)
+
+### Complete FineWeb Training Workflow
+
+#### Step 1: Dataset Preparation
+```bash
+# Activate your environment
+source myenv/bin/activate
+
+# Process the FineWeb dataset (downloads ~10GB, processes to ~800MB)
+python src/data/fineweb_processor.py
+```
+
+**What this does:**
+- Downloads 5 parquet files (~10GB total)
+- Filters for quality (score > 0.6) and appropriate length
+- Processes ~965K examples → ~948K high-quality examples
+- Creates 80/20 train/validation split
+- Generates binary training files: `fineweb_train.bin` (647MB), `fineweb_validation.bin` (162MB)
+
+#### Step 2: Start Training
+```bash
+# Basic training with default parameters
+python src/run_fineweb_training.py
+
+# Training with custom parameters (recommended)
+python src/run_fineweb_training.py \
+  --batch-size 8 \
+  --max-iters 15000 \
+  --learning-rate 6e-4 \
+  --eval-interval 500 \
+  --n-layer 6 \
+  --n-head 8 \
+  --n-embd 512
+```
+
+#### Step 3: Monitor Training Progress
+Training provides real-time monitoring:
+
+**Console Output** (every 500-1000 iterations):
+```
+iter 1000: train_loss 2.3456, val_loss 2.1234, lr 6.00e-04, time 45.23s
+GPU memory: 2.34 GB
+```
+
+**CSV Log File** (`fineweb_checkpoints/training_log.csv`):
+```csv
+iteration,train_loss,val_loss,learning_rate,elapsed_time,gpu_memory_gb
+1000,2.345678,2.123456,6.000000e-04,45.23,2.34
+2000,2.187654,1.987543,5.950000e-04,89.45,2.34
+```
+
+**Monitor in real-time:**
+```bash
+# Watch the log file
+tail -f fineweb_checkpoints/training_log.csv
+
+# Plot progress with Python
+python -c "
+import pandas as pd
+import matplotlib.pyplot as plt
+df = pd.read_csv('fineweb_checkpoints/training_log.csv')
+plt.plot(df['iteration'], df['train_loss'], label='Train Loss')
+plt.plot(df['iteration'], df['val_loss'], label='Val Loss')
+plt.legend(); plt.show()
+"
+```
+
+#### Step 4: Training Outputs
+Training automatically saves:
+- **Best model**: `fineweb_checkpoints/best_model.pt` (saved when validation loss improves)
+- **Regular checkpoints**: Every 2500 iterations
+- **Final model**: `fineweb_checkpoints/fineweb_final_model.pt`
+- **Training log**: `fineweb_checkpoints/training_log.csv`
+
+#### Step 5: Generate Educational Content
+```bash
+# Generate educational content
+python src/generate.py --model fineweb_checkpoints/best_model.pt \
+  --prompt "Machine learning is a subset of artificial intelligence" \
+  --max-tokens 200 --temperature 0.7
+```
+
+### FineWeb vs Children's Stories
+
+| Feature | Children's Stories | FineWeb Educational |
+|---------|-------------------|-------------------|
+| **Content Type** | Creative stories | Educational articles |
+| **Training Approach** | Prompt → Story generation | Text continuation |
+| **Dataset Size** | ~2K examples | ~950K examples |
+| **Use Case** | Story generation | Educational content, factual text |
+| **Model Output** | Creative narratives | Informative, educational text |
+
+**Processing FineWeb Data (Advanced):**
+```bash
+# Test the processor with sample data
+python src/process_fineweb_sample.py
+
+# Clean up downloaded data if needed
+./cleanup_fineweb.sh
+```
+
+#### Dataset Structure Example
+
+Your dataset should look like this:
+```json
+{
+  "prompt": "Write a story about a magical forest",
+  "text": "Once upon a time, in a magical forest...",
+  "moral": "Friendship is the greatest magic",
+  "character": "A brave little rabbit"
+}
+```
+
 ### Training
 
 ```bash
