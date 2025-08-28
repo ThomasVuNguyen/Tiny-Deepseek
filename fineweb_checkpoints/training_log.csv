@@ -1,0 +1,2 @@
+iteration,train_loss,val_loss,learning_rate,elapsed_time,gpu_memory_gb
+0,10.926202,10.931027,0.000000e+00,23.99,3.77
